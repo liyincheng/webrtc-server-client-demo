@@ -1,0 +1,314 @@
+<!DOCType html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <style>th{text-align:left}</style>
+</head>
+<body>
+<header>
+    <p>个人信息：<strong class="your-user-id"></strong> <span style="margin-left:40px">你的IP地址：</span><strong class="your-ip-addr"></strong></p>
+    <p class="msg-info"></p>
+    <div style="display:none;margin:10px 0 20px" class="answer-box">
+        收到来自<span class="ringing-ip"></span> user <span class="ringing-user-id"></span>的视频聊天邀请，是否应答？
+        <button class="answer-call">应答</button>
+        <button class="reject-call">拒绝</button>
+    </div>
+</header>
+<main>
+    <table class="online-user-list" style="width:100%">
+        <thead>
+            <tr>
+                <th>在线用户</th>
+                <th>IP</th>
+                <th>登陆时间</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+        </tbody>
+    </table>
+    <div class="video-box" style="display:none">
+        <video class="my-video" width="300" height="150" autoplay></video>
+        <video class="remote-video" width="300" height="150" autoplay></video>
+        <div>
+            <button class="close-connection-btn">关闭连接</button>
+        </div>
+    </div>
+</main>
+<script>
+const $ = document.querySelector.bind(document);
+const util = {
+    showTip (msg, level = 'info') {
+        $('.msg-info').textContent = (level === 'error' ? '错误：' : '') + msg;
+    },
+    getTime (timestamp) {
+        let date = new Date(timestamp);
+        return date.getFullYear() + '-' + (date.getMonth() + 1) + '-' + date.getDay() + ' '
+            + date.getHours() + ':' + date.getMinutes() + ':' + date.getSeconds();
+    }
+};
+class Chat {
+    constructor (ws, remoteUserId) {
+        this.mediaStream = null;
+        this.ws = ws;
+        this.pc = null;
+        this.remoteUserId = remoteUserId; 
+        this.candidates = [];
+        this.setedRemoteDesc = false;
+    }
+    initConnect () {
+        this.pc = new window.RTCPeerConnection();
+        // 向对方发送nat candidate
+        this.pc.onicecandidate = event => {
+            if (!event.candidate) {
+                return;
+            }
+            console.log('send remote with my nat candidate', event.candidate);
+            this.ws.sendData({
+                type: 'candidate',
+                data: {
+                    candidate: event.candidate,
+                    remoteUserId: this.remoteUserId
+                },
+            });
+        };
+        // 收到对方的视频流
+        this.pc.onaddstream = event => {
+            console.log('onaddstream trigger', event.stream);
+            $('.remote-video').srcObject = event.stream;
+        };
+        // 对方关闭
+        this.pc.oniceconnectionstatechange = event => {
+            console.log('signalingstatechange', this.pc.iceConnectionState);
+            if (this.pc.iceConnectionState === 'disconnected') {
+                util.showTip('对方关闭连接');          
+                $('.remote-video').srcObject = null;
+                this.mediaStream.getVideoTracks()[0].stop();
+                $('.video-box').style.display = 'none';
+            }
+        };
+    }
+    addCandidate (candidate) {
+        // console.log('addCandidate', candidate);
+        candidate && this.candidates.push(candidate);
+        if (this.setedRemoteDesc) {
+            this.candidates.forEach(candidate => {
+                this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+            });
+        }
+    } 
+    ring () {
+        util.showTip('正在呼叫对方...');
+        this.ws.sendData({
+            type: 'setUpCall',
+            data: {
+                remoteUserId: this.remoteUserId
+            }
+        });
+    }
+    // 收到对方的offer后进行响应
+    async answer (offer) {
+        // open要在setRemote之前，不然不会触发对方的addstream事件
+        await this.openMyCamera();
+        console.log('this.pc.setRemoteDescription');
+        await this.pc.setRemoteDescription(offer);
+        await this.pc.setLocalDescription(await this.pc.createAnswer());
+        console.log('this.pc.localDescription', this.pc.localDescription);
+        this.ws.sendData({
+            type: 'answer',
+            data: {
+                desc: this.pc.localDescription
+            }
+        });
+        this.setedRemoteDesc = true;
+        this.addCandidate();
+    }
+    async onRecvAnswer (offer) {
+        console.log('onRecvAnswer', offer);
+        console.log('this.pc.setRemoteDescription');
+        await this.pc.setRemoteDescription(offer);
+        this.setedRemoteDesc = true;
+        this.addCandidate(); 
+    }
+    async call () {
+        this.initConnect();
+        await this.openMyCamera();
+        this.sendOffer();
+    }
+    async openMyCamera () {
+        $('.video-box').style.display = 'block';
+        await this.showMyVideo();
+        // this.pc.addStream(this.mediaStream);
+        // this.mediaStream.getTracks().forEach(track => {
+        //     this.pc.addTrack(track, this.mediaStream);
+        // });
+    }
+    async sendOffer () {
+        let offer = await this.pc.createOffer({
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: true
+        });
+        await this.pc.setLocalDescription(offer);
+        this.ws.sendData({
+            type: 'offer',
+            data: {
+                desc: this.pc.localDescription
+            }
+        });
+        // console.log(offer.sdp);
+        // this.pc.setRemoteDescription(remoteOffer);
+        // var candidate = new RTCIceCandidate(remoteCandidate);
+        // this.pc.addIceCandidate(candidate);
+    }
+    showMyVideo () {
+        return window.navigator.mediaDevices.getUserMedia({video: true})
+            .then(mediaStream => {
+            console.log('addStream');
+            this.pc.addStream(mediaStream);
+            this.mediaStream = mediaStream;
+            $('.my-video').srcObject = mediaStream;
+        }); 
+    }
+    stopMyVideo () {
+        if (this.mediaStream) {
+            this.mediaStream.getVideoTracks()[0].stop();
+        }
+    }
+    closeConnection () {
+        this.pc.close();
+        this.stopMyVideo();
+        $('.video-box').style.display = 'none';
+    }
+}
+</script>
+<script>
+!function () {
+    if (!window.RTCPeerConnection) {
+        util.showTip('你的浏览器不支持WebRTC，无法使用');
+        return;
+    }
+    let userInfo = null,
+        userList = null;
+    let currentChat = null;
+    let remoteUserId = 0;
+    const msgHandler = {
+        error (data) {
+            util.showTip(data.msg, 'error');
+        },
+        userInfo (data) {
+            userInfo = data;
+            $('.your-user-id').textContent = 'User ' + userInfo.id;
+            $('.your-ip-addr').textContent = userInfo.ip;
+        },
+        userList (data) {
+            let tpl = '';
+            data.forEach(user => {
+                if (user.userId !== userInfo.id) {
+                    tpl += `<tr data-user-id="${user.userId}">
+                        <td>User ${user.userId}</td>
+                        <td>${user.ip}</td>
+                        <td>${util.getTime(user.loginTime)}</td>
+                        <td><button class="call-btn">呼叫</button></td>
+                    </tr>`;
+                }
+            });
+            $('.online-user-list tbody').innerHTML = tpl;
+        },
+        // 收到对方发给我的candidate
+        remoteCandidate (data) {
+            console.log('recv remote nat candidate', data);
+            currentChat.addCandidate(data.candidate);
+        },
+        // 收到聊天邀请
+        recvCall (data) {
+            $('.ringing-ip').textContent = data.ip;
+            $('.ringing-user-id').textContent = data.userId;
+            $('.answer-box').style.display = 'block';
+            remoteUserId = data.userId;
+        },
+        // 聊天被对方拒绝
+        callRejected () {
+            util.showTip('呼叫被对方拒绝');
+        },
+        // 对方同意聊天
+        callAnswered () {
+            util.showTip('对方同意聊天');
+            currentChat.call();
+        },
+        // 收到对方的offer
+        offer (data) {
+            let offer = data.desc;
+            currentChat.answer(offer);
+        },
+        // 收到对方的answer
+        answer (data) {
+            let offer = data.desc;
+            currentChat.onRecvAnswer(offer);
+        }
+    }
+    var ws = new WebSocket("wss://www.yinchengli.com:8010");
+    ws.sendData = function (data) {
+        ws.send(JSON.stringify(data));
+    };
+    ws.onopen = function() {
+        console.log('connected successfully');
+    };
+    ws.onmessage = function (event) {
+        // console.log('recv from server', event.data);
+        let data = JSON.parse(event.data);
+        if (typeof msgHandler[data.type] === 'function') {
+            msgHandler[data.type](data.data);
+        } else {
+            console.error('Unkown msg type: ' + data.type);
+        }
+        // switch (data.type) {
+        //     case 'setUserId':
+        //         userId = data.
+        // }
+    }
+    ws.onclose = function () {
+        util.showTip('与服务器的连接断开（10分钟自动断开）', 'error');
+    };
+    ws.onerror = function () {
+        util.showTip('websocket连接发生错误', 'error');
+    };
+    // 发起对话
+    $('.online-user-list').addEventListener('click', event => {
+        if (event.target.classList.contains('call-btn')) {
+            currentChat && currentChat.closeConnection();
+            let userId = event.target.parentNode.parentNode.dataset.userId;
+            let chat = new Chat(ws, userId);
+            currentChat = chat;
+            chat.ring();
+        }
+    });
+    // 应答
+    $('.answer-call').addEventListener('click', event => {
+        currentChat && currentChat.closeConnection();
+        let chat = new Chat(ws, remoteUserId);
+        chat.initConnect();
+        currentChat = chat;
+        ws.sendData({
+            type: 'answerCall'
+        });
+        $('.answer-box').style.display = 'none';
+    });
+    // 拒绝
+    $('.reject-call').addEventListener('click', event => {
+        ws.sendData({
+            type: 'rejectCall' 
+        });
+        $('.answer-box').style.display = 'none';
+    });
+    // 关闭连接
+    $('.close-connection-btn').addEventListener('click', event => {
+        currentChat && currentChat.closeConnection();
+        currentChat = null;
+    });
+    // window.addEventListener('beforeunload', event => {
+    //     currentChat && currentChat.closeConnection();
+    // });
+}();
+</script>
+</body>
+</html>

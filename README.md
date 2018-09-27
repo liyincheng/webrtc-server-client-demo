@@ -1,5 +1,5 @@
-## WebRTC Server Client Demo
-一个完整的WebRTC Demo，包含了websocket server和浏览器代码，使用方法：  
+# WebRTC WebSocket Server and Html Client Demo
+一个完整的WebRTC Demo，包含了websocket websocket server和浏览器代码，使用方法：  
   
 A complete WebRTC Demo, including a websocket server and browser side code. Usage:
 ```bash
